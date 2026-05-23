@@ -5,7 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<title>ReconcilePro v42 — M/s Saisarath & Co</title>
+<title>ReconcilePro v43 — M/s Saisarath & Co</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 <style>
@@ -516,7 +516,7 @@ window.XLSXStyle = XLSX;
         <button class="login-btn" id="registerBtn" onclick="doRegister()">Create Account →</button>
       </div>
     </div>
-    <div style="text-align:center;font-size:11px;color:var(--text3);margin-top:18px;">v42 · ReconcilePro · Powered by Supabase</div>
+    <div style="text-align:center;font-size:11px;color:var(--text3);margin-top:18px;">v43 · ReconcilePro · Powered by Supabase</div>
   </div>
 </div>
 </div>
@@ -1677,7 +1677,7 @@ const SUPABASE_URL = 'https://sjmiehflmzjcrsknnuro.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNqbWllaGZsbXpqY3Jza25udXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2MjMzNzEsImV4cCI6MjA5MTE5OTM3MX0.MUOf93t6Wbk4Iv-2BMF1A1Gj5JULoMZT-FKpkoTY4uA';
 
 // ── APP VERSION ── define once, used everywhere
-const APP_VERSION = 'v42';
+const APP_VERSION = 'v43';
 
 // ── SIDEBAR COLLAPSE ──
 function toggleSidebar() {
@@ -1955,11 +1955,10 @@ function launchApp() {
       document.getElementById('sidebarAvatar').style.background = c.color;
       document.getElementById('sidebarClientName').textContent = c.name;
       document.getElementById('sidebarClientGstin').textContent = c.gstin;
-      loadReconData();
+      await loadReconData();
       if (reconResults && reconResults.length > 0) {
         updateDashboardFromRecon(reconResults);
         updateChipCounts(reconResults);
-        // Also restore the reconciliation table so results are visible on revisit
         setTimeout(() => {
           applyFilterAndRender();
           updateMonthTracker(reconResults);
@@ -2654,7 +2653,7 @@ function filterSwitchClients(q){
     swList.appendChild(item);
   });
 }
-function selectClient(id){
+async function selectClient(id){
   const c=(DB.get('clients')||[]).find(x=>x.id===id);if(!c)return;
   const prevClientId=DB.get('activeClientId');
   DB.set('activeClientId',id);
@@ -2670,21 +2669,9 @@ function selectClient(id){
     buildMonthGrid();
     return;
   }
-  // Full restore — results + upload data + B2BA
+  // Full restore via loadReconData (tries Supabase first, then localStorage)
   reconResults=[]; recon2BData=[]; recon2BAData=[]; reconBooksData=[];
-  try{
-    const raw=localStorage.getItem('reconData_'+id);
-    if(raw) reconResults=JSON.parse(raw);
-  }catch(e){}
-  try{
-    const uploadRaw=localStorage.getItem('reconUpload_'+id);
-    if(uploadRaw){
-      const up=JSON.parse(uploadRaw);
-      if(up.books   &&up.books.length)   reconBooksData=up.books;
-      if(up.twob    &&up.twob.length)    recon2BData=up.twob;
-      if(up.twob_ba &&up.twob_ba.length) recon2BAData=up.twob_ba;
-    }
-  }catch(e){}
+  await loadReconData();
   if(reconResults&&reconResults.length>0){
     updateDashboardFromRecon(reconResults);
     updateChipCounts(reconResults);
@@ -2693,25 +2680,8 @@ function selectClient(id){
       updateMonthTracker(reconResults);
       updateITCEligibility(reconResults);
       updateVendorAnalysis(reconResults);
-      // Restore upload UI
-      if(reconBooksData.length){
-        const fnEl=document.getElementById('fnBooks');
-        const okEl=document.getElementById('okBooks');
-        if(fnEl) fnEl.textContent=reconBooksData.length+' entries (restored)';
-        if(okEl) okEl.classList.add('show');
-      }
-      if(recon2BData.length){
-        const fn2b=document.getElementById('fn2b');
-        const ok2b=document.getElementById('ok2b');
-        if(fn2b) fn2b.textContent=recon2BData.length+' rows (restored)';
-        if(ok2b) ok2b.classList.add('show');
-      }
-      if(reconBooksData.length||recon2BData.length){
-        const cr=document.getElementById('clearUploadsRow');
-        if(cr) cr.style.display='flex';
-      }
     },100);
-  }else{reconResults=[];resetDashboardKPIs(c.name);}
+  }else{resetDashboardKPIs(c.name);}
   buildMonthGrid();
 }
 
@@ -8969,74 +8939,138 @@ function applyReportDefaultsToModal(){
 function getActiveClientId(){
   return DB.get('activeClientId')||'global';
 }
+// ── Save recon data — localStorage + Supabase cloud sync ──────────────────
 function saveReconData(){
+  const clientId = getActiveClientId();
+  if(!clientId) return;
+
+  // Always save to localStorage as fast local cache
   try {
-    const key='reconData_'+getActiveClientId();
-    localStorage.setItem(key, JSON.stringify(reconResults||[]));
-    // also keep a global copy for backward compat
+    localStorage.setItem('reconData_'+clientId, JSON.stringify(reconResults||[]));
     localStorage.setItem('reconData', JSON.stringify(reconResults||[]));
-    // v21: also persist upload state so refresh doesn't wipe uploaded files
-    const uploadKey='reconUpload_'+getActiveClientId();
-    localStorage.setItem(uploadKey, JSON.stringify({
-      books:  reconBooksData||[],
-      twob:   recon2BData||[],
+    localStorage.setItem('reconUpload_'+clientId, JSON.stringify({
+      books:   reconBooksData||[],
+      twob:    recon2BData||[],
       twob_ba: recon2BAData||[]
     }));
   } catch(e) {
-    console.warn('saveReconData failed:', e);
-    // If quota exceeded, try saving results only (drop upload data which is large)
-    if(e.name === 'QuotaExceededError' || e.code === 22){
-      try {
-        const key='reconData_'+getActiveClientId();
-        localStorage.setItem(key, JSON.stringify(reconResults||[]));
-        localStorage.setItem('reconData', JSON.stringify(reconResults||[]));
-        console.warn('Saved results only (upload data too large for localStorage quota)');
-      } catch(e2) { console.error('saveReconData: even results save failed', e2); }
-    }
+    console.warn('saveReconData localStorage failed:', e);
+  }
+
+  // Also save to Supabase for cross-device sync
+  if(sbTenant && sbUser) {
+    const tenantId = sbTenant.id;
+    // Save results
+    sb.from('recon_data').upsert({
+      tenant_id: tenantId,
+      client_id: clientId,
+      data_type: 'results',
+      payload: { results: reconResults||[] },
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'tenant_id,client_id,data_type' })
+    .then(({error}) => { if(error) console.warn('Supabase save results failed:', error.message); });
+
+    // Save upload data (2B + Books + B2BA)
+    sb.from('recon_data').upsert({
+      tenant_id: tenantId,
+      client_id: clientId,
+      data_type: 'uploads',
+      payload: {
+        books:   reconBooksData||[],
+        twob:    recon2BData||[],
+        twob_ba: recon2BAData||[]
+      },
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'tenant_id,client_id,data_type' })
+    .then(({error}) => { if(error) console.warn('Supabase save uploads failed:', error.message); });
   }
 }
-function loadReconData(){
+// ── Load recon data — tries Supabase first, falls back to localStorage ────
+async function loadReconData(){
+  const clientId = getActiveClientId();
+  if(!clientId) return;
+
+  // Helper to restore UI after data loaded
+  function _restoreUploadUI(){
+    setTimeout(()=>{
+      if(reconBooksData.length){
+        const fnEl=document.getElementById('fnBooks');
+        const okEl=document.getElementById('okBooks');
+        if(fnEl) fnEl.textContent=reconBooksData.length+' entries (restored)';
+        if(okEl) okEl.classList.add('show');
+        updateVoucherSummaryBar(reconBooksData);
+      }
+      if(recon2BData.length){
+        const fn2b=document.getElementById('fn2b');
+        const ok2b=document.getElementById('ok2b');
+        if(fn2b) fn2b.textContent=recon2BData.length+' rows (restored)';
+        if(ok2b) ok2b.classList.add('show');
+      }
+      if(reconBooksData.length||recon2BData.length){
+        const cr=document.getElementById('clearUploadsRow');
+        if(cr) cr.style.display='flex';
+      }
+    }, 400);
+  }
+
+  // Try Supabase first (cross-device)
+  if(sbTenant && sbUser){
+    try {
+      const {data, error} = await sb.from('recon_data')
+        .select('data_type, payload')
+        .eq('tenant_id', sbTenant.id)
+        .eq('client_id', clientId);
+
+      if(!error && data && data.length){
+        const resultsRow = data.find(r => r.data_type === 'results');
+        const uploadsRow = data.find(r => r.data_type === 'uploads');
+
+        if(resultsRow?.payload?.results?.length){
+          reconResults = resultsRow.payload.results;
+          console.log('[Supabase] Restored', reconResults.length, 'results');
+        }
+        if(uploadsRow?.payload){
+          const up = uploadsRow.payload;
+          if(up.books  &&up.books.length)   reconBooksData = up.books;
+          if(up.twob   &&up.twob.length)    recon2BData    = up.twob;
+          if(up.twob_ba&&up.twob_ba.length) recon2BAData   = up.twob_ba;
+          console.log('[Supabase] Restored uploads — 2B:', recon2BData.length, 'Books:', reconBooksData.length);
+        }
+
+        // Also update localStorage cache
+        if(reconResults.length)
+          localStorage.setItem('reconData_'+clientId, JSON.stringify(reconResults));
+        if(reconBooksData.length||recon2BData.length)
+          localStorage.setItem('reconUpload_'+clientId, JSON.stringify({
+            books: reconBooksData, twob: recon2BData, twob_ba: recon2BAData
+          }));
+
+        _restoreUploadUI();
+        return; // Supabase loaded — skip localStorage
+      }
+    } catch(e){
+      console.warn('[Supabase] loadReconData failed, falling back to localStorage:', e);
+    }
+  }
+
+  // Fallback: localStorage
   try {
-    const clientId=getActiveClientId();
-    const clientKey='reconData_'+clientId;
-    const clientRaw=localStorage.getItem(clientKey);
-    if(clientRaw){ reconResults=JSON.parse(clientRaw); }
+    const clientRaw = localStorage.getItem('reconData_'+clientId);
+    if(clientRaw) reconResults = JSON.parse(clientRaw);
     else {
-      // fallback to global
       const saved = localStorage.getItem('reconData');
       reconResults = saved ? JSON.parse(saved) : [];
     }
-    // v21: restore upload state
-    const uploadKey='reconUpload_'+clientId;
-    const uploadRaw=localStorage.getItem(uploadKey);
+    const uploadRaw = localStorage.getItem('reconUpload_'+clientId);
     if(uploadRaw){
-      const up=JSON.parse(uploadRaw);
-      if(up.books   &&up.books.length)   { reconBooksData=up.books; }
-      if(up.twob    &&up.twob.length)    { recon2BData=up.twob; }
-      if(up.twob_ba &&up.twob_ba.length) { recon2BAData=up.twob_ba; }
-      // Restore upload UI indicators if data is present
-      setTimeout(()=>{
-        if(reconBooksData.length){
-          const fnEl=document.getElementById('fnBooks');
-          const okEl=document.getElementById('okBooks');
-          if(fnEl) fnEl.textContent=`${reconBooksData.length} entries (restored)`;
-          if(okEl) okEl.classList.add('show');
-          updateVoucherSummaryBar(reconBooksData);
-        }
-        if(recon2BData.length){
-          const fn2b=document.getElementById('fn2b');
-          const ok2b=document.getElementById('ok2b');
-          if(fn2b) fn2b.textContent=`${recon2BData.length} rows (restored)`;
-          if(ok2b) ok2b.classList.add('show');
-        }
-        if(reconBooksData.length||recon2BData.length){
-          const cr=document.getElementById('clearUploadsRow');
-          if(cr) cr.style.display='flex';
-        }
-      }, 400);
+      const up = JSON.parse(uploadRaw);
+      if(up.books  &&up.books.length)   reconBooksData = up.books;
+      if(up.twob   &&up.twob.length)    recon2BData    = up.twob;
+      if(up.twob_ba&&up.twob_ba.length) recon2BAData   = up.twob_ba;
     }
-  } catch(e) {
-    console.warn('loadReconData failed:', e);
+    _restoreUploadUI();
+  } catch(e){
+    console.warn('loadReconData localStorage failed:', e);
     reconResults = [];
   }
 }
@@ -9486,7 +9520,7 @@ function buildMonthGrid(){
   setTimeout(wireSearchInput, 500);
   // v30: Build GSTR-1 vs 3B annual grid on load (loads localStorage data)
   setTimeout(() => g13bBuildGrid(), 600);
-  console.log('ReconcilePro v42 — Bug fixes: returnType from section heading · month name→number · Client Tab single client · unfiled months flagged ✅');
+  console.log('ReconcilePro v43 — Bug fixes: returnType from section heading · month name→number · Client Tab single client · unfiled months flagged ✅');
 })();
 
 // ══════════════════════════════════════════════════════════════
